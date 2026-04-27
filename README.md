@@ -131,7 +131,7 @@ After the container starts successfully, SSH in to initialize the cluster layout
 ### Step 1 — SSH in
 
 ```bash
-ssh ducklake-garage@deploy.cloud.cbh.kth.se
+ssh <deployment-name>@deploy.cloud.cbh.kth.se
 ```
 
 ### Step 2 — Get the node ID
@@ -179,7 +179,7 @@ CREATE OR REPLACE SECRET garage_secret (
     TYPE s3,
     KEY_ID 'GKxxxxxxxxxxxx',
     SECRET 'your-secret-key',
-    ENDPOINT 'ducklake-garage.app.cloud.cbh.kth.se',
+    ENDPOINT '<deployment-name>.app.cloud.cbh.kth.se',
     REGION 'garage',
     URL_STYLE 'path',
     USE_SSL true
