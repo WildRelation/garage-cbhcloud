@@ -2,9 +2,9 @@ FROM alpine:3.19
 
 RUN apk add --no-cache wget
 
-ARG GARAGE_VERSION=v1.0.0
+ARG GARAGE_VERSION=v1.3.1
 RUN wget -O /usr/local/bin/garage \
-    "https://garagehq.deuxfleurs.fr/download/${GARAGE_VERSION}/x86_64-unknown-linux-musl/garage" \
+    "https://garagehq.deuxfleurs.fr/_releases/${GARAGE_VERSION}/x86_64-unknown-linux-musl/garage" \
     && chmod +x /usr/local/bin/garage
 
 COPY entrypoint.sh /entrypoint.sh
