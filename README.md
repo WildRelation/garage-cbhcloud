@@ -12,53 +12,106 @@ Garage stores the actual `.parquet` data files. DuckDB connects to it using the 
 
 ---
 
-## Why two phases?
+## Why a custom Docker image?
 
-Garage requires a `garage.toml` configuration file inside the container. cbhcloud does not support mounting external config files directly, so the deployment starts, we create the config via SSH, and then restart.
+The official `dxflrs/garage` image is minimal (scratch-based) — it contains only the Garage binary with no shell. This causes two problems on cbhcloud:
 
+1. **SSH immediately closes** — cbhcloud's SSH feature runs a shell inside the container, but there is no shell to run.
+2. **No way to create the config file** — Garage requires a `garage.toml` config file, and without SSH access there is no way to create it.
+
+The solution is a custom image based on Alpine Linux that:
+- Includes a shell (so SSH works)
+- Includes a startup script (`entrypoint.sh`) that automatically generates `garage.toml` from environment variables on first run
+
+The image is built from the `Dockerfile` and `entrypoint.sh` in this repo and pushed to GitHub Container Registry.
+
+---
+
+## Problems encountered and solutions
+
+### 1. Official image has no shell → SSH closes immediately
+**Problem:** `dxflrs/garage` is a scratch image. Running `ssh ducklake-garage@deploy.cloud.cbh.kth.se` immediately closes the connection.
+**Solution:** Build a custom Alpine-based image with the Garage binary downloaded manually.
+
+### 2. Wrong download URL for the Garage binary
+**Problem:** The documentation references `/download/` but the actual URL path is `/_releases/`.
 ```
-Phase 1: Deploy → container fails (no config yet) — expected
-Phase 2: SSH in → create config → restart → initialize Garage
+# Wrong
+https://garagehq.deuxfleurs.fr/download/v1.0.0/x86_64-unknown-linux-musl/garage
+
+# Correct
+https://garagehq.deuxfleurs.fr/_releases/v1.3.1/x86_64-unknown-linux-musl/garage
 ```
+**Solution:** Updated the Dockerfile to use `/_releases/` with version `v1.3.1`.
+
+### 3. ghcr.io image is private by default
+**Problem:** After pushing to GitHub Container Registry, cbhcloud could not pull the image because packages are private by default.
+**Solution:** Go to `github.com/<user>?tab=packages` → select the package → Package settings → Change visibility to **Public**.
+
+### 4. `-c` flag conflict
+**Problem:** The cbhcloud Image start arguments were set to `server -c /data/garage.toml`, but the `entrypoint.sh` already adds `-c /data/garage.toml`. The resulting command was:
+```
+garage -c /data/garage.toml server -c /data/garage.toml
+```
+`garage server` does not accept `-c`, so it failed with `Found argument '-c' which wasn't expected`.
+**Solution:** Change Image start arguments to just `server`. The entrypoint handles `-c` automatically.
+
+---
+
+## Building and pushing the custom image
+
+You need Docker installed and a GitHub Personal Access Token with `write:packages` scope.
+
+```bash
+# Login to GitHub Container Registry
+echo "your_github_token" | docker login ghcr.io -u <your-github-username> --password-stdin
+
+# Build the image
+docker build -t ghcr.io/<your-github-username>/garage-cbhcloud:latest .
+
+# Push
+docker push ghcr.io/<your-github-username>/garage-cbhcloud:latest
+```
+
+Then make the package public on GitHub:
+- Go to `github.com/<your-github-username>?tab=packages`
+- Select `garage-cbhcloud`
+- **Package settings → Change visibility → Public**
 
 ---
 
 ## Phase 1 — Create the deployment on cbhcloud
 
-Fill in the form as follows:
-
 ### Name
 ```
 ducklake-garage
 ```
-This will also be the subdomain: `ducklake-garage.app.cloud.cbh.kth.se`
 
 ### Image
 ```
-dxflrs/garage
+ghcr.io/<your-github-username>/garage-cbhcloud:latest
 ```
 
 ### Image start arguments
 ```
-server -c /data/garage.toml
+server
 ```
-Tells Garage to start the S3 server using the config file we will create in Phase 2.
+The entrypoint script handles `-c /data/garage.toml` automatically.
 
 ### Visibility
-Set to **Public** — DuckDB needs to reach Garage from outside cbhcloud to read and write parquet files.
+**Public** — DuckDB needs to reach Garage from outside cbhcloud.
 
 ### Environment variables
 
 | Variable | Value | Why |
 |---|---|---|
 | `PORT` | `3900` | cbhcloud routes external traffic to this port. Garage's S3 API listens on 3900. |
-| `GARAGE_RPC_SECRET` | *(see below)* | Required by Garage for internal cluster communication, even on a single node. |
+| `GARAGE_RPC_SECRET` | *(generated)* | Required by Garage even on a single node. |
 
-Generate the RPC secret by running this in your terminal:
+Generate the RPC secret:
 ```bash
 openssl rand -hex 32
 ```
-Copy the output and paste it as the value of `GARAGE_RPC_SECRET`.
 
 ### Persistent storage
 
@@ -66,68 +119,16 @@ Copy the output and paste it as the value of `GARAGE_RPC_SECRET`.
 |---|---|
 | `garage-data` | `/data` |
 
-This stores both the Garage config, metadata, and data files. Without this, everything is lost on restart.
-
 ### Specs
-The defaults (0.2 CPU, 0.5 GB RAM) are sufficient for a single-node lab deployment.
-
-Click **Create**. The container will start and immediately fail — this is expected because `garage.toml` does not exist yet.
+Defaults (0.2 CPU, 0.5 GB RAM) are sufficient for a lab deployment.
 
 ---
 
-## Phase 2 — Configure Garage via SSH
+## Phase 2 — Initialize Garage (one-time)
 
-### Step 1 — SSH into the deployment
+After the container starts successfully, SSH in to initialize the cluster layout, create a bucket, and generate access keys.
 
-```bash
-ssh ducklake-garage@deploy.cloud.cbh.kth.se
-```
-
-### Step 2 — Create the directories
-
-```bash
-mkdir -p /data/meta /data/data
-```
-
-### Step 3 — Create the config file
-
-Create `/data/garage.toml` with this content, replacing `YOUR_RPC_SECRET` with the same value you used in the environment variables:
-
-```bash
-cat > /data/garage.toml << 'EOF'
-metadata_dir = "/data/meta"
-data_dir = "/data/data"
-db_engine = "sqlite"
-replication_factor = 1
-
-rpc_bind_addr = "[::]:3901"
-rpc_public_addr = "127.0.0.1:3901"
-rpc_secret = "YOUR_RPC_SECRET"
-
-[s3_api]
-api_bind_addr = "[::]:3900"
-s3_region = "garage"
-
-[admin]
-api_bind_addr = "[::]:3903"
-EOF
-```
-
-### Step 4 — Exit SSH and restart the deployment
-
-Exit the SSH session and click **Restart** in the cbhcloud panel. The container should now start successfully and show logs like:
-
-```
-Garage storage server is ready to accept requests
-```
-
----
-
-## Phase 3 — Initialize Garage
-
-Garage requires a one-time layout initialization before it can store data. Do this via SSH.
-
-### Step 1 — SSH back in
+### Step 1 — SSH in
 
 ```bash
 ssh ducklake-garage@deploy.cloud.cbh.kth.se
@@ -139,11 +140,9 @@ ssh ducklake-garage@deploy.cloud.cbh.kth.se
 garage -c /data/garage.toml node id
 ```
 
-Copy the long hex string that appears (the node ID).
+Copy the long hex string.
 
 ### Step 3 — Assign layout
-
-Replace `<node-id>` with the hex string from the previous step:
 
 ```bash
 garage -c /data/garage.toml layout assign -z dc1 -c 1G <node-id>
@@ -162,9 +161,9 @@ garage -c /data/garage.toml bucket create ducklake
 garage -c /data/garage.toml key create ducklake-key
 ```
 
-This prints a **Key ID** (starts with `GK`) and a **Secret key**. Save both — you will need them to connect from DuckDB.
+Save the **Key ID** (`GK...`) and **Secret key** that appear.
 
-### Step 6 — Grant the key access to the bucket
+### Step 6 — Grant permissions
 
 ```bash
 garage -c /data/garage.toml bucket allow --read --write --owner ducklake --key ducklake-key
@@ -173,8 +172,6 @@ garage -c /data/garage.toml bucket allow --read --write --owner ducklake --key d
 ---
 
 ## Connecting DuckDB to Garage
-
-Use these values in your DuckDB S3 secret (replace with your actual Key ID and Secret key from Phase 3):
 
 ```python
 con.execute("""
@@ -195,7 +192,7 @@ AS my_lake (DATA_PATH 's3://ducklake/');
 """)
 ```
 
-> Note: `REGION 'garage'` is required — it must match the `s3_region` value in `garage.toml`.
+> `REGION 'garage'` must match the `s3_region` in `garage.toml`.
 
 ---
 
@@ -209,4 +206,5 @@ AS my_lake (DATA_PATH 's3://ducklake/');
 | Web console | yes (port 9001) | no |
 | Bucket creation | S3 API or Python | CLI: `garage bucket create` |
 | Access keys | single root credential | per-key with per-bucket permissions |
-| Config | env vars | `garage.toml` file |
+| Config | env vars only | `garage.toml` file required |
+| Docker image | has shell | scratch image — needs custom wrapper |
