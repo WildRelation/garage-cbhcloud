@@ -14,16 +14,11 @@ Garage stores the actual `.parquet` data files. DuckDB connects to it using the 
 
 ## Why a custom Docker image?
 
-The official `dxflrs/garage` image is minimal (scratch-based) — it contains only the Garage binary with no shell. This causes two problems on cbhcloud:
+The official `dxflrs/garage` image is scratch-based — it contains only the Garage binary with no shell. cbhcloud's SSH feature runs a shell inside the container, which immediately closes because there is no shell to run.
 
-1. **SSH immediately closes** — cbhcloud's SSH feature runs a shell inside the container, but there is no shell to run.
-2. **No way to create the config file** — Garage requires a `garage.toml` config file, and without SSH access there is no way to create it.
+The solution is a multi-stage build: copy the Garage binary from the official image into an Alpine Linux base that includes a shell. The `garage.toml` config is baked into the image at `/etc/garage.toml` (Garage's default config path). `GARAGE_RPC_SECRET` is read directly from the environment variable — it does not need to appear in the config file.
 
-The solution is a custom image based on Alpine Linux that:
-- Includes a shell (so SSH works)
-- Includes a startup script (`entrypoint.sh`) that automatically generates `garage.toml` from environment variables on first run
-
-The image is built from the `Dockerfile` and `entrypoint.sh` in this repo and pushed to GitHub Container Registry.
+The image is built from the `Dockerfile`, `entrypoint.sh`, and `garage.toml` in this repo and pushed to GitHub Container Registry.
 
 ---
 
@@ -31,20 +26,9 @@ The image is built from the `Dockerfile` and `entrypoint.sh` in this repo and pu
 
 ### 1. Official image has no shell → SSH closes immediately
 **Problem:** `dxflrs/garage` is a scratch image. Running `ssh ducklake-garage@deploy.cloud.cbh.kth.se` immediately closes the connection.
-**Solution:** Build a custom Alpine-based image with the Garage binary downloaded manually.
+**Solution:** Multi-stage build — copy the Garage binary from `dxflrs/garage:v2.1.0` into an Alpine base that includes a shell.
 
-### 2. Wrong download URL for the Garage binary
-**Problem:** The documentation references `/download/` but the actual URL path is `/_releases/`.
-```
-# Wrong
-https://garagehq.deuxfleurs.fr/download/v1.0.0/x86_64-unknown-linux-musl/garage
-
-# Correct
-https://garagehq.deuxfleurs.fr/_releases/v1.3.1/x86_64-unknown-linux-musl/garage
-```
-**Solution:** Updated the Dockerfile to use `/_releases/` with version `v1.3.1`.
-
-### 3. ghcr.io image is private by default
+### 2. ghcr.io image is private by default
 **Problem:** After pushing to GitHub Container Registry, cbhcloud could not pull the image because packages are private by default.
 **Solution:** Go to `github.com/<user>?tab=packages` → select the package → Package settings → Change visibility to **Public**.
 
@@ -69,14 +53,6 @@ ssh -i "C:\Users\<username>\.ssh\id_ed25519_shared" -L <port>:localhost:<port> <
 ```
 
 > See [ducklake-guide](https://github.com/WildRelation/ducklake-guide) for detailed step-by-step instructions.
-
-### 5. `-c` flag conflict
-**Problem:** The cbhcloud Image start arguments were set to `server -c /data/garage.toml`, but the `entrypoint.sh` already adds `-c /data/garage.toml`. The resulting command was:
-```
-garage -c /data/garage.toml server -c /data/garage.toml
-```
-`garage server` does not accept `-c`, so it failed with `Found argument '-c' which wasn't expected`.
-**Solution:** Change Image start arguments to just `server`. The entrypoint handles `-c` automatically.
 
 ---
 
@@ -118,7 +94,6 @@ ghcr.io/<your-github-username>/garage-cbhcloud:latest
 ```
 server
 ```
-The entrypoint script handles `-c /data/garage.toml` automatically.
 
 ### Visibility
 **Public** — DuckDB needs to reach Garage from outside cbhcloud.
@@ -159,7 +134,7 @@ ssh <deployment-name>@deploy.cloud.cbh.kth.se
 ### Step 2 — Get the node ID
 
 ```bash
-garage -c /data/garage.toml node id
+garage node id
 ```
 
 Copy the long hex string.
@@ -167,20 +142,20 @@ Copy the long hex string.
 ### Step 3 — Assign layout
 
 ```bash
-garage -c /data/garage.toml layout assign -z dc1 -c 1G <node-id>
-garage -c /data/garage.toml layout apply --version 1
+garage layout assign -z dc1 -c 1G <node-id>
+garage layout apply --version 1
 ```
 
 ### Step 4 — Create a bucket
 
 ```bash
-garage -c /data/garage.toml bucket create ducklake
+garage bucket create ducklake
 ```
 
 ### Step 5 — Create an access key
 
 ```bash
-garage -c /data/garage.toml key create ducklake-key
+garage key create ducklake-key
 ```
 
 Save the **Key ID** (`GK...`) and **Secret key** that appear.
@@ -188,7 +163,7 @@ Save the **Key ID** (`GK...`) and **Secret key** that appear.
 ### Step 6 — Grant permissions
 
 ```bash
-garage -c /data/garage.toml bucket allow --read --write --owner ducklake --key ducklake-key
+garage bucket allow --read --write --owner ducklake --key ducklake-key
 ```
 
 ---
