@@ -187,7 +187,7 @@ CREATE OR REPLACE SECRET garage_secret (
 """)
 
 con.execute("""
-ATTACH 'ducklake:postgres:host=localhost dbname=ducklake user=duck password=123456 port=5432'
+ATTACH 'ducklake:postgres:host=localhost dbname=<your-db> user=<your-user> password=<your-password> port=5432'
 AS my_lake (DATA_PATH 's3://ducklake/');
 """)
 ```
