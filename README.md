@@ -48,7 +48,29 @@ https://garagehq.deuxfleurs.fr/_releases/v1.3.1/x86_64-unknown-linux-musl/garage
 **Problem:** After pushing to GitHub Container Registry, cbhcloud could not pull the image because packages are private by default.
 **Solution:** Go to `github.com/<user>?tab=packages` → select the package → Package settings → Change visibility to **Public**.
 
-### 4. `-c` flag conflict
+### 4. SSH tunnel access only works for the deployment owner
+
+**Problem:** Sharing the deployment via "Share with team" gives the team member dashboard visibility but not SSH tunnel access. Running the tunnel gives:
+```
+channel 2: open failed: connect failed: user cannot access pod <deployment-name>
+```
+**Solution:** The team member must create a **new** SSH key that is not registered on their own cbhcloud profile, and the owner adds that key to their own profile. The team member then uses `-i` to specify that key:
+
+**Linux / macOS:**
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_shared
+ssh -i ~/.ssh/id_ed25519_shared -L <port>:localhost:<port> <deployment>@deploy.cloud.cbh.kth.se -N
+```
+
+**Windows (PowerShell):**
+```powershell
+ssh-keygen -t ed25519 -f "C:\Users\<username>\.ssh\id_ed25519_shared"
+ssh -i "C:\Users\<username>\.ssh\id_ed25519_shared" -L <port>:localhost:<port> <deployment>@deploy.cloud.cbh.kth.se -N
+```
+
+> See [ducklake-guide](https://github.com/WildRelation/ducklake-guide) for detailed step-by-step instructions.
+
+### 5. `-c` flag conflict
 **Problem:** The cbhcloud Image start arguments were set to `server -c /data/garage.toml`, but the `entrypoint.sh` already adds `-c /data/garage.toml`. The resulting command was:
 ```
 garage -c /data/garage.toml server -c /data/garage.toml
